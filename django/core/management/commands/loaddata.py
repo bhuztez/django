@@ -12,6 +12,7 @@ from django.core.management.color import no_style
 from django.db import (connections, router, transaction, DEFAULT_DB_ALIAS,
       IntegrityError, DatabaseError)
 from django.db.models import get_apps
+from django.utils.resource_loading import FileSystemResourceLoader, AppPackageResourceLoader
 from itertools import product
 
 try:
@@ -74,32 +75,37 @@ class Command(BaseCommand):
             transaction.managed(True, using=using)
 
         class SingleZipReader(zipfile.ZipFile):
-            def __init__(self, *args, **kwargs):
-                zipfile.ZipFile.__init__(self, *args, **kwargs)
+            def __init__(self, fileobj, *args, **kwargs):
+                zipfile.ZipFile.__init__(self, fileobj, *args, **kwargs)
                 if settings.DEBUG:
                     assert len(self.namelist()) == 1, "Zip-compressed fixtures must contain only one file."
             def read(self):
                 return zipfile.ZipFile.read(self, self.namelist()[0])
 
+        class BZ2Reader(object):
+            def __init__(self, fileobj, mode):
+                self.fileobj = fileobj
+
+            def read(self):
+                return bz2.BZ2Decompressor(self.fileobj.read())
+            
+            def close(self):
+                self.fileobj.close()
+
         compression_types = {
-            None:   open,
+            None:   lambda fileobj, mode: fileobj,
             'gz':   gzip.GzipFile,
             'zip':  SingleZipReader
         }
         if has_bz2:
             compression_types['bz2'] = bz2.BZ2File
 
-        app_module_paths = []
+        app_fixtures_loaders = []
+        
         for app in get_apps():
-            if hasattr(app, '__path__'):
-                # It's a 'models/' subpackage
-                for path in app.__path__:
-                    app_module_paths.append(path)
-            else:
-                # It's a models.py module
-                app_module_paths.append(app.__file__)
-
-        app_fixtures = [os.path.join(os.path.dirname(path), 'fixtures') for path in app_module_paths]
+            loader = AppPackageResourceLoader(app.__name__[:-7], 'fixtures')
+            if loader.isdir():
+                app_fixtures_loaders.append(loader)
 
         try:
             with connection.constraint_checks_disabled():
@@ -135,13 +141,13 @@ class Command(BaseCommand):
                         return
 
                     if os.path.isabs(fixture_name):
-                        fixture_dirs = [fixture_name]
+                        fixture_loaders = [FileSystemResourceLoader(fixture_name)]
                     else:
-                        fixture_dirs = app_fixtures + list(settings.FIXTURE_DIRS) + ['']
+                        fixture_loaders = app_fixtures_loaders + list(map(FileSystemResourceLoader, settings.FIXTURE_DIRS)) + [FileSystemResourceLoader('')]
 
-                    for fixture_dir in fixture_dirs:
+                    for fixture_loader in fixture_loaders:
                         if verbosity >= 2:
-                            self.stdout.write("Checking %s for fixtures..." % humanize(fixture_dir))
+                            self.stdout.write("Checking %s for fixtures...\n" % fixture_loader)
 
                         label_found = False
                         for combo in product([using, None], formats, compression_formats):
@@ -154,21 +160,21 @@ class Command(BaseCommand):
                             )
 
                             if verbosity >= 3:
-                                self.stdout.write("Trying %s for %s fixture '%s'..." % \
-                                    (humanize(fixture_dir), file_name, fixture_name))
-                            full_path = os.path.join(fixture_dir, file_name)
-                            open_method = compression_types[compression_format]
+                                self.stdout.write("Trying %s for %s fixture '%s'...\n" % \
+                                    (fixture_loader, file_name, fixture_name))
+                            # open_method = compression_types[compression_format]
                             try:
-                                fixture = open_method(full_path, 'r')
+                                fp = fixture_loader.get_stream(file_name)
+                                fixture = compression_types[compression_format](fileobj=fp, mode='r')
                             except IOError:
                                 if verbosity >= 2:
-                                    self.stdout.write("No %s fixture '%s' in %s." % \
-                                        (format, fixture_name, humanize(fixture_dir)))
+                                    self.stdout.write("No %s fixture '%s' in %s.\n" % \
+                                        (format, fixture_name, fixture_loader))
                             else:
                                 try:
                                     if label_found:
-                                        self.stderr.write("Multiple fixtures named '%s' in %s. Aborting." %
-                                            (fixture_name, humanize(fixture_dir)))
+                                        self.stderr.write("Multiple fixtures named '%s' in %s. Aborting.\n" %
+                                            (fixture_name, fixture_loader))
                                         if commit:
                                             transaction.rollback(using=using)
                                             transaction.leave_transaction_management(using=using)
@@ -178,8 +184,8 @@ class Command(BaseCommand):
                                     objects_in_fixture = 0
                                     loaded_objects_in_fixture = 0
                                     if verbosity >= 2:
-                                        self.stdout.write("Installing %s fixture '%s' from %s." % \
-                                            (format, fixture_name, humanize(fixture_dir)))
+                                        self.stdout.write("Installing %s fixture '%s' from %s.\n" % \
+                                            (format, fixture_name, fixture_loader))
 
                                     objects = serializers.deserialize(format, fixture, using=using)
 
@@ -231,8 +237,8 @@ class Command(BaseCommand):
                 traceback.print_exc()
             else:
                 self.stderr.write(
-                    "Problem installing fixture '%s': %s" %
-                         (full_path, ''.join(traceback.format_exception(sys.exc_type,
+                    "Problem installing fixture '%s': %s\n" %
+                         (file_name, ''.join(traceback.format_exception(sys.exc_type,
                              sys.exc_value, sys.exc_traceback))))
             return
 
