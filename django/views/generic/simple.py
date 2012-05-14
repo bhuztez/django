@@ -1,6 +1,9 @@
 from django.template import loader, RequestContext
-from django.http import HttpResponse, HttpResponseRedirect, HttpResponsePermanentRedirect, HttpResponseGone
+from django.http import HttpResponse
 from django.utils.log import getLogger
+from django.views.generic.base import RedirectView
+from django.views.generic.regression import RegressionView
+
 
 import warnings
 warnings.warn(
@@ -27,7 +30,8 @@ def direct_to_template(request, template, extra_context=None, mimetype=None, **k
     t = loader.get_template(template)
     return HttpResponse(t.render(c), content_type=mimetype)
 
-def redirect_to(request, url, permanent=True, query_string=False, **kwargs):
+
+class redirect_to(RegressionView):
     """
     Redirect to a given URL.
 
@@ -48,21 +52,9 @@ def redirect_to(request, url, permanent=True, query_string=False, **kwargs):
     from the request is appended to the URL.
 
     """
-    args = request.META.get('QUERY_STRING', '')
 
-    if url is not None:
-        if kwargs:
-            url = url % kwargs
+    def __call__(self, request, url, permanent=True, query_string=False, **kwargs):
+        view = RedirectView.as_view(url=url, permanent=permanent, query_string=query_string)
+        return view(request, **kwargs)
 
-        if args and query_string:
-            url = "%s?%s" % (url, args)
 
-        klass = permanent and HttpResponsePermanentRedirect or HttpResponseRedirect
-        return klass(url)
-    else:
-        logger.warning('Gone: %s', request.path,
-                    extra={
-                        'status_code': 410,
-                        'request': request
-                    })
-        return HttpResponseGone()
