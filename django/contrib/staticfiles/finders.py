@@ -38,16 +38,58 @@ class BaseFinder(object):
         raise NotImplementedError()
 
 
-class FileSystemFinder(BaseFinder):
+class BaseStoragesFinder(BaseFinder):
+
+    def __init__(self):
+        self.storages = SortedDict()
+
+    def _find_location(self, storage, path):
+        if storage.prefix:
+            prefix = '%s%s' % (storage.prefix, os.sep)
+            if not path.startswith(prefix):
+                return None
+
+            path = path[len(prefix):]
+
+        if storage.exists(path):
+            matched_path = storage.path(path)
+            if matched_path:
+                return matched_path
+
+    def find(self, path, all=False):
+        """
+        Looks for files in storages.
+        """
+        matches = []
+        for storage in self.storages.itervalues():
+            matched_path = self._find_location(storage, path)
+
+            if matched_path:
+                if not all:
+                    return matched_path
+                matches.append(matched_path)
+
+        return matches
+
+    def list(self, ignore_patterns):
+        """
+        List all files in all storages.
+        """
+        for storage in self.storages.itervalues():
+            if storage.exists(''):
+                for path in utils.get_files(storage, ignore_patterns):
+                    yield path, storage
+
+
+class FileSystemFinder(BaseStoragesFinder):
     """
     A static files finder that uses the ``STATICFILES_DIRS`` setting
     to locate files.
     """
-    def __init__(self, apps=None, *args, **kwargs):
-        # List of locations with static files
-        self.locations = []
-        # Maps dir paths to an appropriate storage instance
-        self.storages = SortedDict()
+    def __init__(self):
+        super(FileSystemFinder, self).__init__()
+        locations = []
+
         if not isinstance(settings.STATICFILES_DIRS, (list, tuple)):
             raise ImproperlyConfigured(
                 "Your STATICFILES_DIRS setting is not a tuple or list; "
@@ -61,112 +103,27 @@ class FileSystemFinder(BaseFinder):
                 raise ImproperlyConfigured(
                     "The STATICFILES_DIRS setting should "
                     "not contain the STATIC_ROOT setting")
-            if (prefix, root) not in self.locations:
-                self.locations.append((prefix, root))
-        for prefix, root in self.locations:
+            if (prefix, root) not in locations:
+                locations.append((prefix, root))
+        for prefix, root in locations:
             filesystem_storage = FileSystemStorage(location=root)
             filesystem_storage.prefix = prefix
             self.storages[root] = filesystem_storage
-        super(FileSystemFinder, self).__init__(*args, **kwargs)
-
-    def find(self, path, all=False):
-        """
-        Looks for files in the extra locations
-        as defined in ``STATICFILES_DIRS``.
-        """
-        matches = []
-        for prefix, root in self.locations:
-            matched_path = self.find_location(root, path, prefix)
-            if matched_path:
-                if not all:
-                    return matched_path
-                matches.append(matched_path)
-        return matches
-
-    def find_location(self, root, path, prefix=None):
-        """
-        Finds a requested static file in a location, returning the found
-        absolute path (or ``None`` if no match).
-        """
-        if prefix:
-            prefix = '%s%s' % (prefix, os.sep)
-            if not path.startswith(prefix):
-                return None
-            path = path[len(prefix):]
-        path = safe_join(root, path)
-        if os.path.exists(path):
-            return path
-
-    def list(self, ignore_patterns):
-        """
-        List all files in all locations.
-        """
-        for prefix, root in self.locations:
-            storage = self.storages[root]
-            for path in utils.get_files(storage, ignore_patterns):
-                yield path, storage
 
 
-class AppDirectoriesFinder(BaseFinder):
+class AppDirectoriesFinder(BaseStoragesFinder):
     """
     A static files finder that looks in the directory of each app as
     specified in the source_dir attribute of the given storage class.
     """
-    storage_class = AppStaticStorage
+    def __init__(self, apps=None):
+        super(AppDirectoriesFinder, self).__init__()
 
-    def __init__(self, apps=None, *args, **kwargs):
-        # The list of apps that are handled
-        self.apps = []
-        # Mapping of app module paths to storage instances
-        self.storages = SortedDict()
         if apps is None:
             apps = settings.INSTALLED_APPS
         for app in apps:
-            app_storage = self.storage_class(app)
-            if os.path.isdir(app_storage.location):
-                self.storages[app] = app_storage
-                if app not in self.apps:
-                    self.apps.append(app)
-        super(AppDirectoriesFinder, self).__init__(*args, **kwargs)
-
-    def list(self, ignore_patterns):
-        """
-        List all files in all app storages.
-        """
-        for storage in six.itervalues(self.storages):
-            if storage.exists(''):  # check if storage location exists
-                for path in utils.get_files(storage, ignore_patterns):
-                    yield path, storage
-
-    def find(self, path, all=False):
-        """
-        Looks for files in the app directories.
-        """
-        matches = []
-        for app in self.apps:
-            match = self.find_in_app(app, path)
-            if match:
-                if not all:
-                    return match
-                matches.append(match)
-        return matches
-
-    def find_in_app(self, app, path):
-        """
-        Find a requested static file in an app's static locations.
-        """
-        storage = self.storages.get(app, None)
-        if storage:
-            if storage.prefix:
-                prefix = '%s%s' % (storage.prefix, os.sep)
-                if not path.startswith(prefix):
-                    return None
-                path = path[len(prefix):]
-            # only try to find a file if the source dir actually exists
-            if storage.exists(path):
-                matched_path = storage.path(path)
-                if matched_path:
-                    return matched_path
+            app_storage = AppStaticStorage(app)
+            self.storages[app] = app_storage
 
 
 class BaseStorageFinder(BaseFinder):
