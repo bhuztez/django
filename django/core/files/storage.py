@@ -100,6 +100,12 @@ class Storage(object):
         """
         raise NotImplementedError()
 
+    def isdir(self, name):
+        """
+        Returns True if path is an existing directory in the storage system.
+        """
+        raise NotImplementedError()
+
     def listdir(self, path):
         """
         Lists the contents of the specified path, returning a 2-tuple of lists;
@@ -241,6 +247,9 @@ class FileSystemStorage(Storage):
 
     def exists(self, name):
         return os.path.exists(self.path(name))
+
+    def isdir(self, name):
+        return os.path.isdir(self.path(name))
 
     def listdir(self, path):
         path = self.path(path)
