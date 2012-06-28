@@ -4,8 +4,21 @@ try:
     from urllib.parse import urljoin
 except ImportError:     # Python 2
     from urlparse import urljoin
+import pkgutil
 import itertools
 from datetime import datetime
+try:
+    import pkg_resources
+except ImportError:
+    pkg_resources = None
+try:
+    from cStringIO import StringIO
+except ImportError:
+    from StringIO import StringIO
+try:
+    import zipimport
+except ImportError:
+    zipimport = None
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
@@ -284,6 +297,112 @@ class FileSystemStorage(Storage):
 
     def modified_time(self, name):
         return datetime.fromtimestamp(os.path.getmtime(self.path(name)))
+
+class _PkgResourcesAppDirectoryStorage(Storage):
+
+    def __init__(self, app, path):
+        self.app = app
+        self.path = '/' + path.lstrip('/')
+
+    def _path(self, name):
+        return safe_join(self.path, name.lstrip('/'))[1:]
+
+    def _open(self, name, mode):
+        return File(pkg_resources.resource_stream(self.app, self._path(name)), name)
+
+    def exists(self, name):
+        return pkg_resources.resource_exists(self.app, self._path(name))
+
+    def isdir(self, name):
+        return pkg_resources.resource_isdir(self.app, self._path(name))
+
+    def listdir(self, path):
+        return pkg_resources.resource_listdir(self.app, self._path(name))
+
+class _PEP302AppDirectoryStorage(Storage):
+
+    def __init__(self, app, path):
+        self.app = app
+        self.path = '/' + path.lstrip('/')
+
+    def _path(self, name):
+        return safe_join(self.path, name.lstrip('/'))[1:]
+
+    def _open(self, name, mode):
+        data = pkgutils.get_data(self.app, self._path(name))
+        if data is not None:
+            return File(StringIO(data), name)
+        raise IOError
+
+    def isdir(self, name):
+        return True
+
+    def exists(self, name):
+        return True
+
+    def listdir(self, path):
+        return []
+
+class _ZipAppDirectoryStorage(Storage):
+
+    def __init__(self, app, loader, path):
+        self.app = app
+        self.loader = loader
+        self.path = path
+        if self.loader.prefix:
+            self.prefix = '/' + self.loader.prefix.strip('/') + '/' + self.app.replace('.', '/')
+        else:
+            self.prefix = '/' + self.app.replace('.', '/')
+        self.files = zipimport._zip_directory_cache[self.loader.archive]
+
+    def _path(self, name):
+        return safe_join(self.prefix , self.path.lstrip('/'), name.lstrip('/'))[1:]
+
+    def _open(self, name, mode):
+        return File(StringIO(self.loader.get_data(self._path(name))), name)
+
+    def isdir(self, name):
+        return self._path(name)+'/' in self.files
+
+    def exists(self, name):
+        if self.isdir(name.rstrip('/')):
+            return True
+
+        return self._path(name) in self.files
+
+    def listdir(self, path):
+        if not isdir(path):
+            raise OSError
+        path = self._path(path)
+
+        return [ name for name in self.files 
+                 if name.startswith(path) and 
+                 '/' not in name[len(path):].rstrip('/') ]
+
+class AppDirectoryStorage(LazyObject):
+
+    def __init__(self, app, path):
+        super(AppDirectoryStorage, self).__init__()
+        self.__dict__['_app'] = app
+        self.__dict__['_path'] = path
+
+    def _setup(self):
+        mod = import_module(self._app)
+        loader = pkgutil.get_loader(self._app)
+        if isinstance(loader, pkgutil.ImpLoader):
+            self._wrapped = FileSystemStorage(safe_join(mod.__path__[0], self._path))
+            return
+
+        if pkg_resources:
+            self._wrapped = _PkgResourcesAppDirectoryStorage(self._app, self._path)
+            return
+
+        if zipimport:
+            if isinstance(loader, zipimport.zipimporter):
+                self._wrapped = _ZipAppDirectoryStorage(self._app, loader, self._path)
+                return
+
+        self._wrapped = _PEP302AppDirectoryStorage(self._app, self._path)
 
 def get_storage_class(import_path=None):
     if import_path is None:
