@@ -8,12 +8,12 @@ import sys
 import gettext as gettext_module
 from threading import local
 
+from django.core.files.storage import FileSystemStorage, AppDirectoryStorage
 from django.utils.importlib import import_module
 from django.utils.encoding import force_str, force_text
 from django.utils.safestring import mark_safe, SafeData
 from django.utils import six
 from django.utils.six import StringIO
-
 
 # Translations are cached in a dictionary for every language+app tuple.
 # The active translations are stored by threadid to make them thread local.
@@ -109,7 +109,7 @@ def translation(language):
 
     from django.conf import settings
 
-    globalpath = os.path.join(os.path.dirname(sys.modules[settings.__module__].__file__), 'locale')
+    globalstorage = FileSystemStorage(os.path.join(os.path.dirname(sys.modules[settings.__module__].__file__), 'locale'))
 
     def _fetch(lang, fallback=None):
 
@@ -121,15 +121,21 @@ def translation(language):
 
         loc = to_locale(lang)
 
-        def _translation(path):
-            try:
-                t = gettext_module.translation('django', path, [loc], DjangoTranslation)
-                t.set_language(lang)
-                return t
-            except IOError:
+        def _translation(storage):
+            nelangs = gettext_module._expand_lang(loc)
+            for nelang in nelangs:
+                locpath = os.path.join(nelang, 'LC_MESSAGES', 'django.mo')
+                if storage.exists(locpath) and not storage.isdir(locpath):
+                    fp = storage.open(locpath)
+                    t = DjangoTranslation(fp)
+                    break
+            else:
                 return None
 
-        res = _translation(globalpath)
+            t.set_language(lang)
+            return t
+
+        res = _translation(globalstorage)
 
         # We want to ensure that, for example,  "en-gb" and "en-us" don't share
         # the same translation object (thus, merging en-us with a local update
@@ -140,8 +146,8 @@ def translation(language):
             res._info = res._info.copy()
             res._catalog = res._catalog.copy()
 
-        def _merge(path):
-            t = _translation(path)
+        def _merge(storage):
+            t = _translation(storage)
             if t is not None:
                 if res is None:
                     return t
@@ -150,15 +156,14 @@ def translation(language):
             return res
 
         for appname in reversed(settings.INSTALLED_APPS):
-            app = import_module(appname)
-            apppath = os.path.join(os.path.dirname(app.__file__), 'locale')
+            appstorage = AppDirectoryStorage(appname, 'locale')
 
-            if os.path.isdir(apppath):
-                res = _merge(apppath)
+            if appstorage.isdir(''):
+                res = _merge(appstorage)
 
         for localepath in reversed(settings.LOCALE_PATHS):
             if os.path.isdir(localepath):
-                res = _merge(localepath)
+                res = _merge(FileSystemStorage(localepath))
 
         if res is None:
             if fallback is not None:
