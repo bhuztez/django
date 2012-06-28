@@ -7,6 +7,7 @@ from optparse import make_option
 
 from django.conf import settings
 from django.core import serializers
+from django.core.files.storage import FileSystemStorage, AppDirectoryStorage
 from django.core.management.base import BaseCommand, CommandError
 from django.core.management.color import no_style
 from django.db import (connections, router, transaction, DEFAULT_DB_ALIAS,
@@ -77,37 +78,55 @@ class Command(BaseCommand):
             transaction.managed(True, using=self.using)
 
         class SingleZipReader(zipfile.ZipFile):
-            def __init__(self, *args, **kwargs):
-                zipfile.ZipFile.__init__(self, *args, **kwargs)
+            def __init__(self, storage, path, mode, *args, **kwargs):
+                fileobj = storage.open(path, mode)
+                zipfile.ZipFile.__init__(self, fileobj, *args, **kwargs)
                 if settings.DEBUG:
                     assert len(self.namelist()) == 1, "Zip-compressed fixtures must contain only one file."
             def read(self):
                 return zipfile.ZipFile.read(self, self.namelist()[0])
 
+        class GzipFileReader(gzip.GzipFile):
+            def __init__(self, storage, path, mode, *args, **kwargs):
+                fileobj = storage.open(path, mode)
+                gzip.GzipFile.__init__(self, fileobj, *args, **kwargs)
+
+        class _BZ2FileReader(object):
+            def __init__(self, storage, path, mode):
+                self.fileobj = storage.open(path, mode)
+
+            def read(self):
+                return bz2.BZ2Decompressor(self.fileobj.read())
+
+            def close(self):
+                self.fileobj.close()
+
+        def BZ2FileReader(storage, path, mode):
+            try:
+                absolute_path = storage.path(path)
+                return bz2.BZ2File(absolute_path, mode=mode)
+            except NotImplementedError:
+                return _BZ2FileReader(storage, path, mode)
+            
+
         self.compression_types = {
-            None:   open,
-            'gz':   gzip.GzipFile,
+            None:   lambda storage, path, mode: storage.open(path, mode),
+            'gz':   GzipFileReader,
             'zip':  SingleZipReader
         }
         if has_bz2:
-            self.compression_types['bz2'] = bz2.BZ2File
+            self.compression_types['bz2'] = BZ2FileReader
 
-        app_module_paths = []
+        app_fixture_storages = []
         for app in get_apps():
-            if hasattr(app, '__path__'):
-                # It's a 'models/' subpackage
-                for path in app.__path__:
-                    app_module_paths.append(path)
-            else:
-                # It's a models.py module
-                app_module_paths.append(app.__file__)
-
-        app_fixtures = [os.path.join(os.path.dirname(path), 'fixtures') for path in app_module_paths]
+            storage = AppDirectoryStorage(app.__name__[:-7], 'fixtures')
+            if storage.isdir(''):
+                app_fixture_storages.append(storage)
 
         try:
             with connection.constraint_checks_disabled():
                 for fixture_label in fixture_labels:
-                    self.load_label(fixture_label, app_fixtures)
+                    self.load_label(fixture_label, app_fixture_storages)
 
             # Since we disabled constraint checks, we must manually check for
             # any invalid keys that might have been added
@@ -155,7 +174,7 @@ class Command(BaseCommand):
         if commit:
             connection.close()
 
-    def load_label(self, fixture_label, app_fixtures):
+    def load_label(self, fixture_label, app_fixture_storages):
 
         parts = fixture_label.split('.')
 
@@ -184,21 +203,22 @@ class Command(BaseCommand):
                     (fixture_name, format))
 
         if os.path.isabs(fixture_name):
-            fixture_dirs = [fixture_name]
+            fixture_storages = [FileSystemStorage(fixture_name)]
         else:
-            fixture_dirs = app_fixtures + list(settings.FIXTURE_DIRS) + ['']
+            fixture_storages = app_fixture_storages + list(map(FileSystemStorage, settings.FIXTURE_DIRS)) + [FileSystemStorage('')]
 
-        for fixture_dir in fixture_dirs:
-            self.process_dir(fixture_dir, fixture_name, compression_formats,
+        for fixture_storage in fixture_storages:
+            self.process_storage(fixture_storage, fixture_name, compression_formats,
                              formats)
 
-    def process_dir(self, fixture_dir, fixture_name, compression_formats,
+    def process_storage(self, fixture_storage, fixture_name, compression_formats,
                     serialization_formats):
 
-        humanize = lambda dirname: "'%s'" % dirname if dirname else 'absolute path'
+        # humanize = lambda dirname: "'%s'" % dirname if dirname else 'absolute path'
 
         if self.verbosity >= 2:
-            self.stdout.write("Checking %s for fixtures..." % humanize(fixture_dir))
+            # self.stdout.write("Checking %s for fixtures..." % humanize(fixture_dir))
+            self.stdout.write("Checking %s for fixtures..." % str(fixture_storage))
 
         label_found = False
         for combo in product([self.using, None], serialization_formats, compression_formats):
@@ -211,28 +231,36 @@ class Command(BaseCommand):
             )
 
             if self.verbosity >= 3:
+                # self.stdout.write("Trying %s for %s fixture '%s'..." % \
+                #     (humanize(fixture_dir), file_name, fixture_name))
                 self.stdout.write("Trying %s for %s fixture '%s'..." % \
-                    (humanize(fixture_dir), file_name, fixture_name))
-            full_path = os.path.join(fixture_dir, file_name)
+                    (str(fixture_storage), file_name, fixture_name))
+
             open_method = self.compression_types[compression_format]
             try:
-                fixture = open_method(full_path, 'r')
+                fixture = open_method(fixture_storage, file_name, 'r')
             except IOError:
                 if self.verbosity >= 2:
+                    # self.stdout.write("No %s fixture '%s' in %s." % \
+                    #    (format, fixture_name, humanize(fixture_dir)))
                     self.stdout.write("No %s fixture '%s' in %s." % \
-                        (format, fixture_name, humanize(fixture_dir)))
+                        (format, fixture_name, str(fixture_storage)))
             else:
                 try:
                     if label_found:
+                        # raise CommandError("Multiple fixtures named '%s' in %s. Aborting." %
+                        #    (fixture_name, humanize(fixture_dir)))
                         raise CommandError("Multiple fixtures named '%s' in %s. Aborting." %
-                            (fixture_name, humanize(fixture_dir)))
+                            (fixture_name, str(fixture_storage)))
 
                     self.fixture_count += 1
                     objects_in_fixture = 0
                     loaded_objects_in_fixture = 0
                     if self.verbosity >= 2:
+                        # self.stdout.write("Installing %s fixture '%s' from %s." % \
+                        #    (format, fixture_name, humanize(fixture_dir)))
                         self.stdout.write("Installing %s fixture '%s' from %s." % \
-                            (format, fixture_name, humanize(fixture_dir)))
+                            (format, fixture_name, str(fixture_storage)))
 
                     objects = serializers.deserialize(format, fixture, using=self.using, ignorenonexistent=self.ignore)
 
@@ -257,7 +285,8 @@ class Command(BaseCommand):
                     label_found = True
                 except Exception as e:
                     if not isinstance(e, CommandError):
-                        e.args = ("Problem installing fixture '%s': %s" % (full_path, e),)
+                        # e.args = ("Problem installing fixture '%s': %s" % (full_path, e),)
+                        e.args = ("Problem installing fixture '%s': %s" % (str(fixture_storage)+file_name, e),)
                     raise
                 finally:
                     fixture.close()
