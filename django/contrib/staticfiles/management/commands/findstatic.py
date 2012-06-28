@@ -21,10 +21,10 @@ class Command(LabelCommand):
         result = finders.find(path, all=options['all'])
         path = smart_text(path)
         if result:
-            if not isinstance(result, (list, tuple)):
+            if not isinstance(result, list):
                 result = [result]
             output = '\n  '.join(
-                (smart_text(os.path.realpath(path)) for path in result))
+                (smart_text(os.path.realpath(storage.path(p))) for storage, p in result))
             self.stdout.write("Found '%s' here:\n  %s" % (path, output))
         else:
             if verbosity >= 1:

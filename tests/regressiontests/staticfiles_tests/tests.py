@@ -655,13 +655,13 @@ class FinderTestCase(object):
     """
     def test_find_first(self):
         src, dst = self.find_first
-        found = self.finder.find(src)
-        self.assertEqual(os.path.normcase(found), os.path.normcase(dst))
+        storage, path = self.finder.find(src)
+        self.assertEqual(os.path.normcase(storage.path(path)), os.path.normcase(dst))
 
     def test_find_all(self):
         src, dst = self.find_all
         found = self.finder.find(src, all=True)
-        found = [os.path.normcase(f) for f in found]
+        found = [os.path.normcase(storage.path(path)) for storage, path in found]
         dst = [os.path.normcase(d) for d in dst]
         self.assertEqual(found, dst)
 

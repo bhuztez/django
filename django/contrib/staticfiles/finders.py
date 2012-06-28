@@ -1,7 +1,7 @@
 import os
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.core.files.storage import default_storage, Storage, FileSystemStorage
+from django.core.files.storage import default_storage, Storage, FileSystemStorage, AppDirectoryStorage
 from django.utils.datastructures import SortedDict
 from django.utils.functional import empty, memoize, LazyObject
 from django.utils.importlib import import_module
@@ -44,7 +44,7 @@ class BaseStoragesFinder(BaseFinder):
         self.storages = SortedDict()
 
     def _find_location(self, storage, path):
-        if storage.prefix:
+        if getattr(storage, 'prefix', False):
             prefix = '%s%s' % (storage.prefix, os.sep)
             if not path.startswith(prefix):
                 return None
@@ -52,9 +52,7 @@ class BaseStoragesFinder(BaseFinder):
             path = path[len(prefix):]
 
         if storage.exists(path):
-            matched_path = storage.path(path)
-            if matched_path:
-                return matched_path
+            return path
 
     def find(self, path, all=False):
         """
@@ -66,8 +64,8 @@ class BaseStoragesFinder(BaseFinder):
 
             if matched_path:
                 if not all:
-                    return matched_path
-                matches.append(matched_path)
+                    return (storage, matched_path)
+                matches.append((storage, matched_path))
 
         return matches
 
@@ -122,7 +120,7 @@ class AppDirectoriesFinder(BaseStoragesFinder):
         if apps is None:
             apps = settings.INSTALLED_APPS
         for app in apps:
-            app_storage = AppStaticStorage(app)
+            app_storage = AppDirectoryStorage(app, 'static')
             self.storages[app] = app_storage
 
 
@@ -149,16 +147,11 @@ class BaseStorageFinder(BaseFinder):
         """
         Looks for files in the default file storage, if it's local.
         """
-        try:
-            self.storage.path('')
-        except NotImplementedError:
-            pass
-        else:
-            if self.storage.exists(path):
-                match = self.storage.path(path)
-                if all:
-                    match = [match]
-                return match
+        if self.storage.exists(path):
+            match = (self.storage, path)
+            if all:
+                match = [match]
+            return match
         return []
 
     def list(self, ignore_patterns):
@@ -196,8 +189,9 @@ def find(path, all=False):
         result = finder.find(path, all=all)
         if not all and result:
             return result
-        if not isinstance(result, (list, tuple)):
-            result = [result]
+        # if not isinstance(result, (list, tuple)):
+        #     result = [result]
+        assert isinstance(result, list)
         matches.extend(result)
     if matches:
         return matches
