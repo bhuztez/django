@@ -15,7 +15,7 @@ import imp
 import os.path
 
 from django.template import TemplateDoesNotExist, Context
-from django.template.loaders.eggs import Loader as EggLoader
+from django.template.loaders.app_directories import Loader as EggLoader
 from django.template import loader
 from django.utils import unittest, six
 from django.utils.six import StringIO
@@ -30,8 +30,8 @@ class MockProvider(pkg_resources.NullProvider):
     def _has(self, path):
         return path in self.module._resources
 
-    def _isdir(self, path):
-        return False
+    def _isdir(self,path):
+        return path == 'templates'
 
     def get_resource_stream(self, manager, resource_name):
         return self.module._resources[resource_name]

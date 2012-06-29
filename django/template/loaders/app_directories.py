@@ -8,55 +8,34 @@ import sys
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.core.files.storage import AppDirectoryStorage
 from django.template.base import TemplateDoesNotExist
 from django.template.loader import BaseLoader
-from django.utils._os import safe_join
-from django.utils.importlib import import_module
-from django.utils import six
 
-# At compile time, cache the directories to search.
-if not six.PY3:
-    fs_encoding = sys.getfilesystemencoding() or sys.getdefaultencoding()
-app_template_dirs = []
-for app in settings.INSTALLED_APPS:
-    try:
-        mod = import_module(app)
-    except ImportError as e:
-        raise ImproperlyConfigured('ImportError %s: %s' % (app, e.args[0]))
-    template_dir = os.path.join(os.path.dirname(mod.__file__), 'templates')
-    if os.path.isdir(template_dir):
-        if not six.PY3:
-            template_dir = template_dir.decode(fs_encoding)
-        app_template_dirs.append(template_dir)
 
-# It won't change, so convert it to a tuple to save memory.
-app_template_dirs = tuple(app_template_dirs)
 
 class Loader(BaseLoader):
     is_usable = True
 
-    def get_template_sources(self, template_name):
-        """
-        Returns the absolute paths to "template_name", when appended to each
-        directory in "template_dirs". Any paths that don't lie inside one of the
-        template dirs are excluded from the result set, for security reasons.
-        """
-        template_dirs = app_template_dirs
-        for template_dir in template_dirs:
-            try:
-                yield safe_join(template_dir, template_name)
-            except UnicodeDecodeError:
-                # The template dir name was a bytestring that wasn't valid UTF-8.
-                raise
-            except ValueError:
-                # The joined path was located outside of template_dir.
-                pass
+    def __init__(self, apps=None):
+        self.apps = apps
+        if apps is None:
+            self.apps = settings.INSTALLED_APPS
+        self.reset()
+
+    def reset(self):
+        app_template_storages = []
+        for app in self.apps:
+            storage = AppDirectoryStorage(app, 'templates')
+            if storage.isdir(''):
+                app_template_storages.append(storage)
+
+        self.app_template_storages = tuple(app_template_storages)
 
     def load_template_source(self, template_name):
-        for filepath in self.get_template_sources(template_name):
-            try:
-                with open(filepath, 'rb') as fp:
-                    return (fp.read().decode(settings.FILE_CHARSET), filepath)
-            except IOError:
-                pass
+        for storage in self.app_template_storages:
+            if storage.exists(template_name):
+                with storage.open(template_name, 'rb') as fp:
+                    return (fp.read().decode(settings.FILE_CHARSET), template_name)
+
         raise TemplateDoesNotExist(template_name)
