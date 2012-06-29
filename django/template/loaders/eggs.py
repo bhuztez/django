@@ -14,7 +14,7 @@ from django.utils import six
 class Loader(BaseLoader):
     is_usable = resource_string is not None
 
-    def load_template_source(self, template_name, template_dirs=None):
+    def load_template_source(self, template_name):
         """
         Loads templates from Python eggs via pkg_resource.resource_string.
 
@@ -31,5 +31,3 @@ class Loader(BaseLoader):
                     resource = resource.decode(settings.FILE_CHARSET)
                 return (resource, 'egg:%s:%s' % (app, pkg_name))
         raise TemplateDoesNotExist(template_name)
-
-_loader = Loader()

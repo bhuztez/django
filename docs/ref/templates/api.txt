@@ -828,8 +828,8 @@ of the ``load_template_source()`` method implemented there::
     class Loader(app_directories.Loader):
         is_usable = True
 
-        def load_template(self, template_name, template_dirs=None):
-            source, origin = self.load_template_source(template_name, template_dirs)
+        def load_template(self, template_name):
+            source, origin = self.load_template_source(template_name)
             template = Template(source)
             return template, origin
 

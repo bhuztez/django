@@ -27,23 +27,20 @@ class Loader(BaseLoader):
             self._cached_loaders = cached_loaders
         return self._cached_loaders
 
-    def find_template(self, name, dirs=None):
+    def find_template(self, name):
         for loader in self.loaders:
             try:
-                template, display_name = loader(name, dirs)
-                return (template, make_origin(display_name, loader, name, dirs))
+                template, display_name = loader(name)
+                return (template, make_origin(display_name, loader, name))
             except TemplateDoesNotExist:
                 pass
         raise TemplateDoesNotExist(name)
 
-    def load_template(self, template_name, template_dirs=None):
+    def load_template(self, template_name):
         key = template_name
-        if template_dirs:
-            # If template directories were specified, use a hash to differentiate
-            key = '-'.join([template_name, hashlib.sha1('|'.join(template_dirs)).hexdigest()])
 
         if key not in self.template_cache:
-            template, origin = self.find_template(template_name, template_dirs)
+            template, origin = self.find_template(template_name)
             if not hasattr(template, 'render'):
                 try:
                     template = get_template_from_string(template, origin, template_name)
